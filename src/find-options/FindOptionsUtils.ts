@@ -244,25 +244,64 @@ export class FindOptionsUtils {
             const selection = alias + "." + relation;
             qb.leftJoinAndSelect(selection, relationAlias);
 
-            // join the eager relations of the found relation
-            const relMetadata = metadata.relations.find(metadata => metadata.propertyName === relation);
-            if (relMetadata) {
-                this.joinEagerRelations(qb, relationAlias, relMetadata.inverseEntityMetadata);
-            }
-
             // remove added relations from the allRelations array, this is needed to find all not found relations at the end
             allRelations.splice(allRelations.indexOf(prefix ? prefix + "." + relation : relation), 1);
 
             // try to find sub-relations
             const join = qb.expressionMap.joinAttributes.find(join => join.entityOrProperty === selection);
             this.applyRelationsRecursively(qb, allRelations, join!.alias.name, join!.metadata!, prefix ? prefix + "." + relation : relation);
+
+            // join the eager relations of the found relation
+            const relMetadata = metadata.relations.find(metadata => metadata.propertyName === relation);
+            if (relMetadata) {
+                this.joinEagerRelations(qb, relationAlias, relMetadata.inverseEntityMetadata);
+            }
         });
     }
 
     public static joinEagerRelations(qb: SelectQueryBuilder<any>, alias: string, metadata: EntityMetadata) {
         metadata.eagerRelations.forEach(relation => {
-            const relationAlias = qb.connection.namingStrategy.eagerJoinRelationAlias(alias, relation.propertyPath);
-            qb.leftJoinAndSelect(alias + "." + relation.propertyPath, relationAlias);
+            let relationAlias = qb.connection.namingStrategy.eagerJoinRelationAlias(alias, relation.propertyPath);
+
+            // Checking whether the relation wasn't joined yet.
+            let addJoin = true;
+            for (const join of qb.expressionMap.joinAttributes) {
+                if (
+                    join.condition !== "" ||
+                    join.mapToProperty !== undefined ||
+                    join.isMappingMany !== undefined ||
+                    join.direction !== "LEFT" ||
+                    join.entityOrProperty !== `${alias}.${relation.propertyPath}`
+                ) {
+                    continue;
+                }
+                addJoin = false;
+                relationAlias = join.alias.name;
+                break;
+            }
+            if (qb.connection.driver.maxAliasLength && relationAlias.length > qb.connection.driver.maxAliasLength) {
+                relationAlias = shorten(relationAlias);
+            }
+
+            if (addJoin) {
+                qb.leftJoin(alias + "." + relation.propertyPath, relationAlias);
+            }
+
+            // Checking whether the relation wasn't selected yet.
+            // This check shall be after the join check to detect relationAlias.
+            let addSelect = true;
+            for (const select of qb.expressionMap.selects) {
+                if (select.aliasName !== undefined || select.virtual !== undefined || select.selection !== relationAlias) {
+                    continue;
+                }
+                addSelect = false;
+                break;
+            }
+
+            if (addSelect) {
+                qb.addSelect(relationAlias);
+            }
+
             this.joinEagerRelations(qb, relationAlias, relation.inverseEntityMetadata);
         });
     }
